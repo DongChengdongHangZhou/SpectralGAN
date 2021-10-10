@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import itertools
 
-from util.azimuth_integral import crossEntropyFourierAzimuth, GetPSD1D, powerloss
+from util.azimuth_integral import Azimuthloss, GetPSD1D, powerloss, spectralloss
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
@@ -45,8 +45,8 @@ class CycleGANModel(BaseModel):
         if is_train:
             parser.add_argument('--lambda_A', type=float, default=10.0, help='weight for cycle loss (A -> B -> A)')
             parser.add_argument('--lambda_B', type=float, default=10.0, help='weight for cycle loss (B -> A -> B)')
-            parser.add_argument('--lambda_C', type=float, default=20.0, help='weight for powerloss')
-            parser.add_argument('--lambda_D', type=float, default=20.0, help='weight for azimuthal integral loss')
+            parser.add_argument('--lambda_C', type=float, default=1.0, help='weight for powerloss')
+            parser.add_argument('--lambda_D', type=float, default=1.0, help='weight for azimuthal integral loss')
             parser.add_argument('--lambda_identity', type=float, default=0.5, help='use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1')
 
         return parser
@@ -61,15 +61,15 @@ class CycleGANModel(BaseModel):
         self.real_img_fourier_azimuth_mean = pd.read_csv('models/power_distribution/'+opt.name+'/mean_targetData.csv',header=None)
         self.real_img_fourier_azimuth_mean = np.array(self.real_img_fourier_azimuth_mean)[0]
         self.real_img_fourier_azimuth_mean = torch.from_numpy(self.real_img_fourier_azimuth_mean).unsqueeze(0).cuda(0)
-        self.real_img_fourier_azimuth_std = pd.read_csv('models/power_distribution/'+opt.name+'/std_targetData.csv',header=None)
-        self.real_img_fourier_azimuth_std = np.array(self.real_img_fourier_azimuth_std)[0]
-        self.real_img_fourier_azimuth_std = torch.from_numpy(self.real_img_fourier_azimuth_std).cuda(0)
-        self.upper_bound = torch.reshape(self.real_img_fourier_azimuth_mean + 0.2*self.real_img_fourier_azimuth_std,(2,8,8)).unsqueeze(0)
-        self.bottom_bound = torch.reshape(self.real_img_fourier_azimuth_mean- 0.2*self.real_img_fourier_azimuth_std,(2,8,8)).unsqueeze(0)
         self.BATCH_SIZE = 2
-        self.real_img_fourier_azimuth_mean = torch.reshape(self.real_img_fourier_azimuth_mean,(2,8,8)).unsqueeze(0)
+        self.real_img_fourier_azimuth_mean_reshape = torch.reshape(self.real_img_fourier_azimuth_mean,(2,8,8)).unsqueeze(0)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B','azimuthal_integral','powerloss']
+        if opt.loss_type == 'powerloss':
+            self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B','azimuthal_integral','powerloss']
+        if opt.loss_type == 'spectralloss':
+            self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B','spectralloss']
+        if opt.loss_type == 'noloss':
+            self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B']        
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_A = ['real_A', 'fake_B', 'rec_A']
         visual_names_B = ['real_B', 'fake_A', 'rec_B']
@@ -95,7 +95,7 @@ class CycleGANModel(BaseModel):
             self.net_azimuthal_integral.load_state_dict(self.checkpoint['inceptionNet'])
         self.net_azimuthal_integral.zero_grad()
         self.transform = transforms.ToTensor()
-        self.average_real = self.real_img_fourier_azimuth_mean.float().cuda(0)
+        self.average_real = self.real_img_fourier_azimuth_mean_reshape.float().cuda(0)
 
         if self.isTrain:  # define discriminators
             self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
@@ -162,25 +162,20 @@ class CycleGANModel(BaseModel):
         fake_A = self.fake_A_pool.query(self.fake_A)
         self.loss_D_B = self.backward_D_basic(self.netD_B, self.real_A, fake_A)
 
-    def backward_G(self,epoch):
+    def backward_G(self,epoch,total_iters):
         """Calculate the loss for generators G_A and G_B"""
         lambda_idt = self.opt.lambda_identity
         lambda_A = self.opt.lambda_A
         lambda_B = self.opt.lambda_B
-        lambda_C = self.opt.lambda_C
-        lambda_D = self.opt.lambda_D
-        if epoch == 1 or epoch == 2:
+        if total_iters<6820:
             lambda_C = 0
             lambda_D = 0
-        if epoch == 3:
-            lambda_C = self.opt.lambda_C*0.1*epoch
-            lambda_D = self.opt.lambda_D*0.1*epoch
-        if epoch<=10 and epoch>3:
-            lambda_C = self.opt.lambda_C*0.4*epoch
-            lambda_D = self.opt.lambda_D*0.4*epoch
-        if epoch>10:
-            lambda_C = self.opt.lambda_C*6.0
-            lambda_D = self.opt.lambda_D*6.0
+        if total_iters>=6820 and total_iters<6920:
+            lambda_C = self.opt.lambda_C*0.5
+            lambda_D = self.opt.lambda_D*2
+        if total_iters>=6920:
+            lambda_C = 0
+            lambda_D = 0       
         # Identity loss
         if lambda_idt > 0:
             # G_A should be identity if real_B is fed: ||G_A(B) - B||
@@ -201,26 +196,35 @@ class CycleGANModel(BaseModel):
         self.loss_cycle_A = self.criterionCycle(self.rec_A, self.real_A) * lambda_A
         # Backward cycle loss || G_A(G_B(B)) - B||
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
-
-        self.azimuthal_integral_fake = GetPSD1D(self.fake_B)
-        self.loss_powerloss = powerloss(self.azimuthal_integral_fake,self.upper_bound,self.bottom_bound)*lambda_C
-        self.azimuthal_integral_fake_feature = self.net_azimuthal_integral(self.azimuthal_integral_fake)
-        self.azimuthal_integral_real_feature = self.net_azimuthal_integral(self.average_real)
-        self.loss_azimuthal_integral = crossEntropyFourierAzimuth(self.azimuthal_integral_real_feature,self.azimuthal_integral_fake_feature)*lambda_D
-        if torch.any(torch.isnan(self.loss_powerloss))==True or torch.any(torch.isnan(self.loss_azimuthal_integral))==True: # if self.loss_powerloss == nan or self.loss_azimuthal_integral == nan:
-            self.loss_powerloss = 0
-            self.loss_azimuthal_integral = 0
-        self.loss_G = self.loss_G_A + self.loss_G_B  + self.loss_idt_A + self.loss_idt_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_powerloss + self.loss_azimuthal_integral 
+        self.azimuthal_integral_fake = GetPSD1D(self.fake_A)
+        if self.opt.loss_type == 'powerloss':    
+            self.azimuthal_integral_fake = torch.clamp(self.azimuthal_integral_fake,0.0,1.0)
+            self.loss_powerloss = powerloss(self.real_img_fourier_azimuth_mean_reshape,self.azimuthal_integral_fake)*lambda_C
+            self.azimuthal_integral_fake_feature = self.net_azimuthal_integral(self.azimuthal_integral_fake)
+            self.azimuthal_integral_real_feature = self.net_azimuthal_integral(self.average_real)
+            self.loss_azimuthal_integral = Azimuthloss(self.azimuthal_integral_real_feature,self.azimuthal_integral_fake_feature)*lambda_D
+            if torch.any(torch.isnan(self.loss_powerloss))==True or torch.any(torch.isnan(self.loss_azimuthal_integral))==True: # if self.loss_powerloss == nan or self.loss_azimuthal_integral == nan:
+                self.loss_powerloss = 0
+                self.loss_azimuthal_integral = 0
+            self.loss_G = self.loss_G_A + self.loss_G_B  + self.loss_idt_A + self.loss_idt_B + self.loss_cycle_A + self.loss_cycle_B+ self.loss_powerloss + self.loss_azimuthal_integral   
+        if self.opt.loss_type == 'spectralloss':
+            self.azimuthal_integral_fake = torch.clamp(self.azimuthal_integral_fake,0.0,1.0)
+            self.loss_spectralloss = spectralloss(self.real_img_fourier_azimuth_mean_reshape,self.azimuthal_integral_fake)*lambda_C
+            if torch.any(torch.isnan(self.loss_spectralloss))==True:
+                self.loss_spectralloss = 0
+            self.loss_G = self.loss_G_A + self.loss_G_B  + self.loss_idt_A + self.loss_idt_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_spectralloss
+        if self.opt.loss_type == 'noloss':
+            self.loss_G = self.loss_G_A + self.loss_G_B  + self.loss_idt_A + self.loss_idt_B + self.loss_cycle_A + self.loss_cycle_B
         self.loss_G.backward()
 
-    def optimize_parameters(self,epoch):
+    def optimize_parameters(self,epoch,total_iters):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         # forward
         self.forward()      # compute fake images and reconstruction images.
         # G_A and G_B
         self.set_requires_grad([self.netD_A, self.netD_B], False)  # Ds require no gradients when optimizing Gs
         self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
-        self.backward_G(epoch)             # calculate gradients for G_A and G_B
+        self.backward_G(epoch,total_iters)             # calculate gradients for G_A and G_B
         self.optimizer_G.step()       # update G_A and G_B's weights
         # D_A and D_B
         self.set_requires_grad([self.netD_A, self.netD_B], True)
