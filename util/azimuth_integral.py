@@ -19,10 +19,10 @@ def GetPSD1D(psd2D):
     return torch.reshape(psd1D,(batch_size,2,8,8))      
 
 def Azimuthloss(tensor1,tensor2):
-    loss = torch.relu(((tensor1-tensor2)*(tensor1-tensor2)).sum())*200
+    loss = torch.relu(((tensor1-tensor2)*(tensor1-tensor2)).sum()-0.08)*100
     return loss        
 
-def powerloss(tensor1,tensor2):
+def normloss(tensor1,tensor2):
     loss = ((tensor1-tensor2)*(tensor1-tensor2)).sum()
     return loss
 
