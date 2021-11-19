@@ -23,3 +23,4 @@ class TestOptions(BaseOptions):
         parser.set_defaults(load_size=parser.get_default('crop_size'))
         self.isTrain = False
         return parser
+
