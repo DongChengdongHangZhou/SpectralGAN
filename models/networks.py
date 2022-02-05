@@ -427,7 +427,7 @@ class NestedUNet(nn.Module):
         self.conv1_3 = conv_block_nested(filters[1]*3 + filters[2], filters[1], filters[1])
         self.conv0_4 = conv_block_nested(filters[0]*4 + filters[1], filters[0], filters[0])
         self.final = nn.Conv2d(filters[0], out_ch, kernel_size=1)
-        self.sigmoid = nn.Sigmoid()
+        self.tanh = nn.Tanh()
     def forward(self, x):
         x0_0 = self.conv0_0(x)
         x1_0 = self.conv1_0(self.pool(x0_0))
@@ -445,6 +445,6 @@ class NestedUNet(nn.Module):
         x1_3 = self.conv1_3(torch.cat([x1_0, x1_1, x1_2, self.Up(x2_2)], 1))
         x0_4 = self.conv0_4(torch.cat([x0_0, x0_1, x0_2, x0_3, self.Up(x1_3)], 1))
         output = self.final(x0_4)
-        output = self.sigmoid(output)
+        output = self.tanh(output)
         return output
 
